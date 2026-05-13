@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Camera, X, Scan, UploadCloud } from 'lucide-react';
+import { Camera, X, Scan } from 'lucide-react';
 
 interface ImageUploadZoneProps {
   onImageSelected: (base64: string) => void;

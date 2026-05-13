@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Zap, Shield, Target } from 'lucide-react';
+import { Target } from 'lucide-react';
 
 interface HeroSectionProps {
   onReportClick: () => void;
@@ -27,7 +27,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onReportClick, onComma
           </div>
 
           <h1 
-            className="text-6xl sm:text-8xl md:text-9xl font-black tracking-[0.25em] mb-8 text-white relative inline-block font-['Orbitron']"
+            className="text-5xl sm:text-7xl md:text-8xl font-black tracking-[0.25em] mb-8 text-white relative inline-block font-['Orbitron']"
             style={{ textShadow: '0 0 50px rgba(0,212,255,0.4), 0 0 100px rgba(0,212,255,0.1)' }}
           >
             {title}

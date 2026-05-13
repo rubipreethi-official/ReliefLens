@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Mic, Volume2, VolumeX, Terminal, ShieldAlert } from 'lucide-react';
 import { enrichIncident } from '@/services/gemma/gemmaClient';
+import { speakAsARIA, cancelAriaSpeech } from '@/services/tts/ariaVoiceService';
 
 export const ARIA_GREETING = 
-  "System initialized. Protocol Omega-4 active. " +
-  "I am ARIA. I have established a secure link to your coordinate node. " +
-  "Describe the disaster impact area immediately. I am prioritizing your uplink.";
+  "Stay calm. Don't panic. நான் உங்களுக்கு உதவ இங்கே இருக்கிறேன். " +
+  "I am ARIA. Tell me what happened.";
 
 export const ARIA_SYSTEM_PROMPT = `
 You are ARIA, the Tactical Virtual Agent for ReliefLens.
@@ -48,50 +48,26 @@ export const ARIAPanel: React.FC<ARIAPanelProps> = ({ isOpen, onClose, onInciden
   const [status, setStatus] = useState<AriaStatus>('IDLE');
   const [currentSpeech, setCurrentSpeech] = useState<string>('');
   const [isMuted, setIsMuted] = useState<boolean>(false);
-  const [exchanges, setExchanges] = useState<Exchange[]>([]);
   const [transcript, setTranscript] = useState<string>('');
   
   const displayedText = useTypewriter(currentSpeech, 20);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
-  const speakWithElevenLabs = async (text: string) => {
+  const performAriaSpeech = async (text: string) => {
     if (isMuted) { setStatus('IDLE'); return; }
-    setStatus('SPEAKING');
-    try {
-      const apiKey = import.meta.env.VITE_ELEVENLABS_API_KEY;
-      if (!apiKey) throw new Error("Key Missing");
-      const response = await fetch('https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM', {
-        method: 'POST',
-        headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, model_id: 'eleven_multilingual_v2', voice_settings: { stability: 0.7, similarity_boost: 0.8 } })
-      });
-      if (!response.ok) throw new Error("API Error");
-      const audioBlob = await response.blob();
-      const url = URL.createObjectURL(audioBlob);
-      if (audioRef.current) {
-        audioRef.current.src = url;
-        audioRef.current.play();
-        audioRef.current.onended = () => setStatus('IDLE');
-      }
-    } catch (err) {
-      console.warn("Fallback to WebSpeech", err);
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-        const utt = new SpeechSynthesisUtterance(text);
-        utt.onend = () => setStatus('IDLE');
-        window.speechSynthesis.speak(utt);
-      } else setStatus('IDLE');
-    }
+    await speakAsARIA(
+      text,
+      () => setStatus('SPEAKING'),
+      () => setStatus('IDLE')
+    );
   };
 
   useEffect(() => {
     if (isOpen) {
       setCurrentSpeech(ARIA_GREETING);
-      setExchanges([{ sender: 'aria', text: ARIA_GREETING }]);
-      speakWithElevenLabs(ARIA_GREETING);
+      performAriaSpeech(ARIA_GREETING);
     } else {
-      if (audioRef.current) audioRef.current.pause();
-      window.speechSynthesis?.cancel();
+      cancelAriaSpeech();
     }
   }, [isOpen]);
 
@@ -104,7 +80,6 @@ export const ARIAPanel: React.FC<ARIAPanelProps> = ({ isOpen, onClose, onInciden
     if (status !== 'LISTENING') return;
     setStatus('ANALYZING');
     const userMsg = transcript;
-    setExchanges(prev => [...prev, { sender: 'user', text: userMsg }]);
 
     const res = await enrichIncident({ voiceTranscript: userMsg, textInput: `COMMAND: ${ARIA_SYSTEM_PROMPT}` });
     let reply = "Transmission received. Priority dispatch initiated. Stay at your current node.";
@@ -114,15 +89,14 @@ export const ARIAPanel: React.FC<ARIAPanelProps> = ({ isOpen, onClose, onInciden
       onIncidentExtracted?.(ext);
     }
     setCurrentSpeech(reply);
-    setExchanges(prev => [...prev, { sender: 'aria', text: reply }]);
-    speakWithElevenLabs(reply);
+    performAriaSpeech(reply);
   };
 
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-[#050810]/90 backdrop-blur-xl" id="aria-console">
-      <audio ref={audioRef} className="hidden" />
+      {/* Removed hidden audio element as AudioContext is used directly */}
       
       {/* Decorative Scanlines */}
       <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_2px,3px_100%]" />

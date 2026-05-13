@@ -1,5 +1,5 @@
 import React from 'react';
-import { Zap, Loader2, Target } from 'lucide-react';
+import { Loader2, Target } from 'lucide-react';
 
 interface AnalyzeButtonProps {
   onClick: () => void;

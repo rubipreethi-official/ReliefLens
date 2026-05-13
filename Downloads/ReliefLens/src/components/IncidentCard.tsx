@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertTriangle, MapPin, Users, Activity, Layers, Phone, Crosshair } from 'lucide-react';
+import { AlertTriangle, MapPin, Users, Activity, Layers, Crosshair } from 'lucide-react';
 import type { IncidentCard as IncidentCardType } from '@/types/incident.types';
 
 interface IncidentCardProps {

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bot, Radio } from 'lucide-react';
+import { Radio } from 'lucide-react';
 
 interface SpeakWithAriaButtonProps {
   onClick: () => void;

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Shield, Target, Activity } from 'lucide-react';
+import { Shield, Activity } from 'lucide-react';
 import { StatusBadge, type ConnectionStatus } from './StatusBadge';
 
 interface NavbarProps {

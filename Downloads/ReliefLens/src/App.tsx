@@ -50,11 +50,11 @@ export const App: React.FC = () => {
           priorityScore: 85,
           requiresReview: false,
           what: ext.what,
-          where: ext.where,
-          who: ext.who,
-          urgency_flags: ext.urgency_flags,
-          suggested_resources: ext.suggested_resources,
-          contacts: ext.contacts,
+          where: ext.where || { description: 'Unknown location', confidence: 0 },
+          who: ext.who || { count: 0, condition: 'Unknown', confidence: 0 },
+          urgency_flags: ext.urgency_flags || [],
+          suggested_resources: ext.suggested_resources || [],
+          contacts: ext.contacts || [],
           auditLog: [{ timestamp: new Date().toISOString(), action: 'enriched', actor: 'ARIA_CORE' }]
         };
         setIncidents(prev => [newInc, ...prev]);
@@ -96,10 +96,10 @@ export const App: React.FC = () => {
           priorityScore: 90,
           requiresReview: false,
           what: ext.what,
-          where: ext.where,
-          who: ext.who,
-          urgency_flags: ext.urgency_flags,
-          suggested_resources: ext.suggested_resources,
+          where: ext.where || { description: 'Unknown location', confidence: 0 },
+          who: ext.who || { count: 0, condition: 'Unknown', confidence: 0 },
+          urgency_flags: ext.urgency_flags || [],
+          suggested_resources: ext.suggested_resources || [],
           auditLog: [{ timestamp: new Date().toISOString(), action: 'enriched', actor: 'ARIA_CORE' }]
         };
         setIncidents(prev => [newInc, ...prev]);
