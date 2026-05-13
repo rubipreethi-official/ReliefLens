@@ -18,11 +18,6 @@ Language: Auto-detect. Respond in the user's language (English or Tamil).
 
 type AriaStatus = 'IDLE' | 'LISTENING' | 'ANALYZING' | 'SPEAKING';
 
-interface Exchange {
-  sender: 'user' | 'aria';
-  text: string;
-}
-
 interface ARIAPanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -51,7 +46,6 @@ export const ARIAPanel: React.FC<ARIAPanelProps> = ({ isOpen, onClose, onInciden
   const [transcript, setTranscript] = useState<string>('');
   
   const displayedText = useTypewriter(currentSpeech, 20);
-  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
   const performAriaSpeech = async (text: string) => {
     if (isMuted) { setStatus('IDLE'); return; }
