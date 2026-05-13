@@ -1,0 +1,46 @@
+# Phase 1 Completion & Avatar Setup Walkthrough
+
+I have successfully finished building out the Phase 1 Backend/RAG services and created the new Avatar Component for you!
+
+## What was built:
+1. **`.env.local` Created**: I copied your example file over. It's ready for your keys.
+2. **`embeddingService.ts`**: Runs the mathematical text-to-vector operations right inside your browser (100% free, no APIs!).
+3. **`vectorStore.ts`**: Connects to the MongoDB Atlas Data API so your React app can safely fetch data.
+4. **`ragService.ts`**: Ties it all together to pull disaster guidelines into the LLM context.
+5. **`AvatarSpeaker.tsx`**: A brand new UI component that reads text aloud using the browser's free Web Speech API, and automatically switches between `idle.mp4` and `talking.mp4` when speech starts and stops.
+
+---
+
+## 🛑 CHECKPOINT 3: Your Setup Tasks
+
+Because you're new to this, here is your step-by-step homework to get everything running perfectly!
+
+### 1. Fill in your API Keys
+Open `.env.local` (in your project folder) and paste in:
+- Your Google AI Studio Key (for `VITE_GOOGLE_AI_API_KEY`).
+- Your MongoDB Data API URL and Key (if you're ready for the database).
+
+### 2. Download the Free Whisper WASM Model
+To ensure your voice-to-text works totally offline and for free:
+1. Create a folder called `whisper` inside your `public/` directory (`ReliefLens/public/whisper`).
+2. Go to this link: [ggml-tiny.bin (75MB)](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin)
+3. Save that file exactly as `ggml-tiny.bin` inside the `public/whisper/` folder.
+
+### 3. Create & Add Your Avatar Videos
+
+**Canva vs Gemini Veo?**
+- Use **Gemini Veo** if you want an incredibly photorealistic, cinematic human avatar. It's amazing for realism, but sometimes it's hard to make the "idle" and "talking" clips look exactly identical without a slight visual jump when they switch.
+- Use **Canva** if your avatar is illustrated/2D. Canva is fantastic for making perfectly seamless looping animations.
+
+**What you need to do:**
+1. Create two short videos (1-3 seconds is plenty).
+   - Video 1: The avatar just blinking or standing still.
+   - Video 2: The avatar moving their mouth / talking.
+2. Export both videos as `.mp4` files.
+3. Rename them to exactly `idle.mp4` and `talking.mp4`.
+4. Drag and drop both files into your `public/` folder (`ReliefLens/public/idle.mp4`).
+
+> [!TIP]
+> Try to make both videos have the exact same background and framing so the transition looks smooth when it switches!
+
+Let me know when you have finished these steps, or if you get stuck on any of them!
