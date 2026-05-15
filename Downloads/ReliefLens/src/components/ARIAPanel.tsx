@@ -1,28 +1,21 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { X, Mic, Volume2, VolumeX, Terminal, ShieldAlert } from 'lucide-react';
-import { enrichIncident } from '@/services/gemma/gemmaClient';
+import { chatWithGemma } from '@/services/gemma/gemmaClient';
 import { speakAsARIA, cancelAriaSpeech } from '@/services/tts/ariaVoiceService';
-
-export const ARIA_GREETING = 
-  "Stay calm. Don't panic. நான் உங்களுக்கு உதவ இங்கே இருக்கிறேன். " +
-  "I am ARIA. Tell me what happened.";
-
-export const ARIA_SYSTEM_PROMPT = `
-You are ARIA, the Tactical Virtual Agent for ReliefLens.
-Tone: Authoritative, calm, military-grade efficiency, deeply supportive.
-Length: Under 25 words.
-Structure: Status Update + One Direct Instruction.
-Context: You are coordinating life-saving disaster response.
-Language: Auto-detect. Respond in the user's language (English or Tamil).
-`;
+import { useIncidentStore } from '@/store/incidentStore';
+import { t } from '@/utils/i18n';
+import type { GemmaMessage, ExtractedIncidentData } from '@/types/ai.types';
 
 type AriaStatus = 'IDLE' | 'LISTENING' | 'ANALYZING' | 'SPEAKING';
 
-interface ARIAPanelProps {
+interface AriaPanelProps {
   isOpen: boolean;
   onClose: () => void;
-  onIncidentExtracted?: (data: any) => void;
+  onIncidentExtracted?: (data: ExtractedIncidentData) => void;
 }
+
+const GREETING =
+  'Stay calm. I am ARIA, your emergency assistant. What type of emergency is happening right now?';
 
 const useTypewriter = (text: string, speed = 25) => {
   const [displayed, setDisplayed] = useState('');
@@ -39,138 +32,317 @@ const useTypewriter = (text: string, speed = 25) => {
   return displayed;
 };
 
-export const ARIAPanel: React.FC<ARIAPanelProps> = ({ isOpen, onClose, onIncidentExtracted }) => {
+export const AriaPanel: React.FC<AriaPanelProps> = ({ isOpen, onClose, onIncidentExtracted }) => {
   const [status, setStatus] = useState<AriaStatus>('IDLE');
-  const [currentSpeech, setCurrentSpeech] = useState<string>('');
-  const [isMuted, setIsMuted] = useState<boolean>(false);
-  const [transcript, setTranscript] = useState<string>('');
-  
+  const [currentSpeech, setCurrentSpeech] = useState('');
+  const [isMuted, setIsMuted] = useState(false);
+  const [transcript, setTranscript] = useState('');
+  const [chatHistory, setChatHistory] = useState<GemmaMessage[]>([]);
+  const [hasExtracted, setHasExtracted] = useState(false);
+  const [thinkingDisplay, setThinkingDisplay] = useState('');
+
+  const recognitionRef = useRef<{ stop: () => void } | null>(null);
+  const transcriptRef = useRef('');
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const spokeOnOpenRef = useRef(false);
   const displayedText = useTypewriter(currentSpeech, 20);
 
-  const performAriaSpeech = async (text: string) => {
-    if (isMuted) { setStatus('IDLE'); return; }
-    await speakAsARIA(
-      text,
-      () => setStatus('SPEAKING'),
-      () => setStatus('IDLE')
-    );
-  };
+  const { userLocation, currentLanguage, setLanguage } = useIncidentStore();
+
+  const performAriaSpeech = useCallback(
+    async (text: string) => {
+      if (isMuted) {
+        setStatus('IDLE');
+        return;
+      }
+      cancelAriaSpeech();
+      await speakAsARIA(
+        text,
+        () => setStatus('SPEAKING'),
+        () => setStatus('IDLE')
+      );
+    },
+    [isMuted]
+  );
 
   useEffect(() => {
-    if (isOpen) {
-      setCurrentSpeech(ARIA_GREETING);
-      performAriaSpeech(ARIA_GREETING);
-    } else {
-      cancelAriaSpeech();
+    const video = videoRef.current;
+    if (!video) return;
+    const src = status === 'SPEAKING' ? '/talking.mp4' : '/idle.mp4';
+    if (video.getAttribute('data-src') !== src) {
+      video.src = src;
+      video.setAttribute('data-src', src);
     }
-  }, [isOpen]);
+    video.load();
+    video.play().catch(() => {});
+  }, [status]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      spokeOnOpenRef.current = false;
+      cancelAriaSpeech();
+      recognitionRef.current?.stop();
+      return;
+    }
+
+    if (spokeOnOpenRef.current) return;
+    spokeOnOpenRef.current = true;
+
+    setTranscript('');
+    transcriptRef.current = '';
+    setHasExtracted(false);
+    setChatHistory([{ role: 'model', parts: [{ text: GREETING }] }]);
+    setCurrentSpeech(GREETING);
+    performAriaSpeech(GREETING);
+
+    return () => {
+      cancelAriaSpeech();
+      recognitionRef.current?.stop();
+    };
+  }, [isOpen, performAriaSpeech]);
+
+  const startListening = () => {
+    cancelAriaSpeech();
+    const win = window as Window & { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown };
+    const SpeechRecognitionCtor = (win.SpeechRecognition || win.webkitSpeechRecognition) as
+      | (new () => {
+          continuous: boolean;
+          interimResults: boolean;
+          lang: string;
+          onresult: ((event: {
+            results: { length: number; [i: number]: { isFinal: boolean; 0: { transcript: string } } };
+          }) => void) | null;
+          onerror: (() => void) | null;
+          start: () => void;
+          stop: () => void;
+        })
+      | undefined;
+
+    if (!SpeechRecognitionCtor) return;
+
+    const recognition = new SpeechRecognitionCtor();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = currentLanguage === 'Tamil' ? 'ta-IN' : 'en-US';
+
+    recognition.onresult = (event) => {
+      let combined = '';
+      for (let i = 0; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          combined += event.results[i][0].transcript + ' ';
+        }
+      }
+      const last = event.results[event.results.length - 1];
+      if (!last.isFinal) combined += last[0].transcript;
+      const trimmed = combined.trim();
+      if (trimmed) {
+        transcriptRef.current = trimmed;
+        setTranscript(trimmed);
+      }
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  };
 
   const handleHold = () => {
     setStatus('LISTENING');
-    setTranscript("Structural collapse at north sector. Multiple casualties suspected. Gas leak confirmed.");
+    transcriptRef.current = '';
+    setTranscript('');
+    startListening();
   };
 
   const handleRelease = async () => {
     if (status !== 'LISTENING') return;
+    recognitionRef.current?.stop();
     setStatus('ANALYZING');
-    const userMsg = transcript;
 
-    const res = await enrichIncident({ voiceTranscript: userMsg, textInput: `COMMAND: ${ARIA_SYSTEM_PROMPT}` });
-    let reply = "Transmission received. Priority dispatch initiated. Stay at your current node.";
-    if (res.success && res.result?.extracted) {
-      const ext = res.result.extracted;
-      reply = `Confirmed: ${ext.what?.incident_type}. Severity set to ${ext.severity.toUpperCase()}. Emergency teams are inbound.`;
-      onIncidentExtracted?.(ext);
+    await new Promise((r) => setTimeout(r, 400));
+
+    const userMsgText = transcriptRef.current.trim() || transcript.trim();
+    const userMsg: GemmaMessage = {
+      role: 'user',
+      parts: [{ text: userMsgText || 'I need emergency help.' }],
+    };
+    const newHistory = [...chatHistory, userMsg];
+    setChatHistory(newHistory);
+
+    const lowerMsg = userMsgText.toLowerCase();
+    if (lowerMsg.includes('tamil') || lowerMsg.includes('தமிழ்')) {
+      setLanguage('Tamil');
+      const reply = 'நிச்சயமாக. தயவுசெய்து பேரிடர் வகையும் பாதிக்கப்பட்டவர்களின் எண்ணிக்கையும் சொல்லுங்கள்.';
+      setCurrentSpeech(reply);
+      setChatHistory([...newHistory, { role: 'model', parts: [{ text: reply }] }]);
+      await performAriaSpeech(reply);
+      setStatus('IDLE');
+      return;
     }
-    setCurrentSpeech(reply);
-    performAriaSpeech(reply);
+    if (lowerMsg.includes('english')) {
+      setLanguage('English');
+      const reply = 'Understood. What type of disaster is it, and roughly how many people need help?';
+      setCurrentSpeech(reply);
+      setChatHistory([...newHistory, { role: 'model', parts: [{ text: reply }] }]);
+      await performAriaSpeech(reply);
+      setStatus('IDLE');
+      return;
+    }
+
+    const res = await chatWithGemma(newHistory, userLocation);
+
+    if (res.success) {
+      const text = res.text || '';
+      
+      // Parse Thinking vs Speaking
+      const thinkingMatch = text.match(/THINKING:\s*([\s\S]*?)(?=SPEAKING:|$)/i);
+      const speakingMatch = text.match(/SPEAKING:\s*([\s\S]*)/i);
+      
+      const thinking = thinkingMatch ? thinkingMatch[1].trim() : '';
+      const speaking = speakingMatch ? speakingMatch[1].trim() : (thinkingMatch ? '' : text);
+      
+      setThinkingDisplay(thinking);
+
+      if (res.extracted) {
+        const confirmMsg = speaking || 'I have logged your incident and notified emergency teams. Move to a safe place.';
+        setCurrentSpeech(confirmMsg);
+        setChatHistory([...newHistory, { role: 'model', parts: [{ text: text }] }]);
+        await performAriaSpeech(confirmMsg);
+        setHasExtracted(true);
+        onIncidentExtracted?.(res.extracted);
+        setTimeout(() => {
+          document.getElementById('assessed-cards')?.scrollIntoView({ behavior: 'smooth' });
+        }, 1000);
+      } else if (text) {
+        setCurrentSpeech(speaking || text);
+        setChatHistory([...newHistory, { role: 'model', parts: [{ text: text }] }]);
+        if (speaking) await performAriaSpeech(speaking);
+      }
+    } else {
+      const errorMsg = 'Connection issue. Please try again or use the report form below.';
+      setCurrentSpeech(errorMsg);
+      setChatHistory([...newHistory, { role: 'model', parts: [{ text: errorMsg }] }]);
+      await performAriaSpeech(errorMsg);
+    }
+
+    setStatus('IDLE');
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-[#050810]/90 backdrop-blur-xl" id="aria-console">
-      {/* Removed hidden audio element as AudioContext is used directly */}
-      
-      {/* Decorative Scanlines */}
-      <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_2px,3px_100%]" />
-
-      <div className="w-full max-w-4xl bg-[#0D1117] border-t border-x border-white/10 rounded-t-[2.5rem] p-8 shadow-[0_-20px_100px_rgba(0,212,255,0.15)] flex flex-col gap-8 relative overflow-hidden">
-        
-        {/* Header Section */}
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#050810]/90 backdrop-blur-xl" id="aria-console">
+      <div className="w-full max-w-4xl max-h-[90vh] bg-[#0D1117] border border-white/10 rounded-[2.5rem] p-8 shadow-[0_0_100px_rgba(0,212,255,0.15)] flex flex-col gap-8 relative overflow-y-auto my-auto">
         <div className="flex items-center justify-between relative z-10">
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-2xl bg-[#00D4FF]/10 border border-[#00D4FF]/20 flex items-center justify-center shadow-[0_0_20px_rgba(0,212,255,0.1)]">
+            <div className="w-12 h-12 rounded-2xl bg-[#00D4FF]/10 border border-[#00D4FF]/20 flex items-center justify-center">
               <Terminal className="w-6 h-6 text-[#00D4FF]" />
             </div>
-            <div className="flex flex-col">
+            <div>
               <h3 className="font-black text-lg tracking-[0.2em] text-white">ARIA V4.0</h3>
               <div className="flex items-center gap-2">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#30D158] animate-pulse" />
-                <span className="text-[10px] font-black text-[#8BA3C7] uppercase tracking-widest">Tactical Link Established</span>
+                <span className="text-[10px] font-black text-[#8BA3C7] uppercase tracking-widest">
+                  Tactical Link — {status}
+                </span>
               </div>
             </div>
           </div>
-
-          <button onClick={onClose} className="p-3 rounded-2xl bg-white/5 text-[#8BA3C7] hover:text-white hover:bg-white/10 transition-all border border-white/5">
+          <button
+            type="button"
+            onClick={() => {
+              cancelAriaSpeech();
+              onClose();
+            }}
+            className="p-3 rounded-2xl bg-white/5 text-[#8BA3C7] hover:text-white hover:bg-white/10 transition-all border border-white/5"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Visualizer & Status */}
         <div className="flex flex-col items-center justify-center py-10 relative">
-          {/* Animated Background Rings */}
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className={`w-40 h-40 rounded-full border border-[#00D4FF]/20 transition-all duration-1000 ${status === 'SPEAKING' ? 'scale-[2.5] opacity-0' : 'scale-100 opacity-100'}`} />
-            <div className={`w-40 h-40 rounded-full border border-[#00D4FF]/10 transition-all duration-1000 delay-100 ${status === 'SPEAKING' ? 'scale-[3] opacity-0' : 'scale-100 opacity-100'}`} />
-          </div>
-
-          {/* Core Visual Port */}
           <div className="relative w-40 h-40 rounded-full border-4 border-[#00D4FF]/30 shadow-[0_0_60px_rgba(0,212,255,0.2)] overflow-hidden bg-[#050810]">
             <video
-              src={status === 'SPEAKING' ? '/talking.mp4' : '/idle.mp4'}
-              autoPlay loop muted playsInline
+              ref={videoRef}
+              src="/idle.mp4"
+              data-src="/idle.mp4"
+              autoPlay
+              loop
+              muted
+              playsInline
               className="absolute inset-0 w-full h-full object-cover"
             />
-            {/* Overlay Grid */}
-            <div className="absolute inset-0 bg-dot-grid opacity-20 pointer-events-none" />
           </div>
-
-          {/* Status Capsule */}
-          <div className="mt-8 flex items-center gap-2 px-6 py-2 rounded-full bg-black/40 border border-white/10 shadow-inner">
-            <span className={`w-2 h-2 rounded-full ${status === 'SPEAKING' ? 'bg-[#30D158]' : status === 'LISTENING' ? 'bg-red-500' : 'bg-[#00D4FF]'} animate-pulse`} />
+          <div className="mt-8 flex items-center gap-2 px-6 py-2 rounded-full bg-black/40 border border-white/10">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                status === 'SPEAKING' ? 'bg-[#30D158]' : status === 'LISTENING' ? 'bg-red-500' : 'bg-[#00D4FF]'
+              } animate-pulse`}
+            />
             <span className="text-xs font-black text-white uppercase tracking-[0.3em]">{status}</span>
           </div>
         </div>
 
-        {/* Typewriter Output */}
-        <div className="bg-black/40 border border-white/5 rounded-3xl p-8 min-h-[120px] relative group overflow-hidden">
-          <div className="absolute top-0 left-0 w-1 h-full bg-[#00D4FF]/40" />
-          <p className="text-lg font-medium text-[#E8F4FD] leading-relaxed relative z-10">
+        <div className="bg-black/40 border border-white/5 rounded-3xl p-8 min-h-[120px] max-h-[300px] overflow-y-auto relative custom-scrollbar">
+          {thinkingDisplay && (
+            <div className="mb-4 p-3 bg-[#00D4FF]/5 rounded-2xl border border-[#00D4FF]/10 animate-fade-in">
+              <span className="text-[9px] font-black text-[#00D4FF]/40 uppercase tracking-widest block mb-1">Internal Reasoning</span>
+              <p className="text-[11px] text-[#8BA3C7]/60 italic leading-relaxed font-mono">
+                {thinkingDisplay}
+              </p>
+            </div>
+          )}
+          <p className="text-lg font-medium text-[#E8F4FD] leading-relaxed whitespace-pre-wrap">
             {displayedText}
             <span className="inline-block w-2.5 h-5 ml-2 bg-[#00D4FF] animate-pulse align-middle" />
           </p>
+          {transcript && (
+            <p className="mt-4 text-xs text-[#8BA3C7] border-t border-white/5 pt-3 italic">
+              Heard: &quot;{transcript}&quot;
+            </p>
+          )}
         </div>
 
-        {/* Action Controls */}
         <div className="flex flex-col sm:flex-row items-center gap-6 mt-auto">
           <button
-            onClick={() => setIsMuted(!isMuted)}
-            className={`p-5 rounded-3xl border transition-all ${isMuted ? 'bg-red-500/10 border-red-500/20 text-red-400' : 'bg-white/5 border-white/10 text-[#8BA3C7] hover:text-white'}`}
+            type="button"
+            onClick={() => {
+              if (!isMuted) cancelAriaSpeech();
+              setIsMuted(!isMuted);
+            }}
+            className={`p-5 rounded-3xl border transition-all ${
+              isMuted ? 'bg-red-500/10 border-red-500/20 text-red-400' : 'bg-white/5 border-white/10 text-[#8BA3C7] hover:text-white'
+            }`}
           >
             {isMuted ? <VolumeX className="w-6 h-6" /> : <Volume2 className="w-6 h-6" />}
           </button>
 
           <button
-            onMouseDown={handleHold} onMouseUp={handleRelease}
-            onTouchStart={handleHold} onTouchEnd={handleRelease}
+            type="button"
+            onMouseDown={handleHold}
+            onMouseUp={handleRelease}
+            onTouchStart={handleHold}
+            onTouchEnd={handleRelease}
             className={`flex-1 w-full py-6 rounded-[2rem] font-black text-sm tracking-[0.4em] uppercase transition-all duration-300 flex items-center justify-center gap-4 select-none ${
-              status === 'LISTENING' ? 'bg-red-500 text-white shadow-[0_0_50px_rgba(239,68,68,0.4)] scale-95' : 'bg-[#00D4FF] text-[#050810] hover:shadow-[0_0_50px_rgba(0,212,255,0.3)]'
+              status === 'LISTENING'
+                ? 'bg-red-500 text-white shadow-[0_0_50px_rgba(239,68,68,0.4)] scale-95'
+                : 'bg-[#00D4FF] text-[#050810] hover:shadow-[0_0_50px_rgba(0,212,255,0.3)]'
             }`}
           >
             <Mic className="w-6 h-6" />
-            {status === 'LISTENING' ? 'Uplink Open' : 'Hold to Speak'}
+            {status === 'LISTENING' ? 'Uplink Open' : t('aria.hold_to_speak', currentLanguage)}
           </button>
+
+          {hasExtracted && (
+            <button
+              type="button"
+              onClick={() => {
+                cancelAriaSpeech();
+                onClose();
+              }}
+              className="flex-1 w-full py-6 rounded-[2rem] font-black text-sm tracking-[0.4em] uppercase bg-[#30D158] text-[#050810] hover:shadow-[0_0_50px_rgba(48,209,88,0.3)] transition-all animate-bounce"
+            >
+              View Report
+            </button>
+          )}
 
           <div className="hidden lg:flex items-center gap-4 px-6 py-4 bg-white/5 border border-white/5 rounded-3xl">
             <ShieldAlert className="w-5 h-5 text-amber-500" />
@@ -180,7 +352,6 @@ export const ARIAPanel: React.FC<ARIAPanelProps> = ({ isOpen, onClose, onInciden
             </div>
           </div>
         </div>
-
       </div>
     </div>
   );

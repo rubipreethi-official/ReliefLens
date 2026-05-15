@@ -9,6 +9,7 @@
 
 import { db } from './db'
 import { enrichIncident } from '@/services/gemma/gemmaClient'
+import { backendApi } from '@/services/api/backendClient'
 import { calculatePriorityScore, requiresHumanReview } from '@/services/prioritisation/priorityEngine'
 import { nowISO } from '@/utils/dateUtils'
 import { createLogger } from '@/utils/logger'
@@ -92,6 +93,14 @@ export async function processSyncQueue(): Promise<{ processed: number; failed: n
 
       // Update IndexedDB
       await db.incidents.put(enrichedIncident)
+
+      // Sync to MongoDB
+      try {
+        await backendApi.saveIncident(enrichedIncident)
+        logger.info(`Synced incident ${incident.id} to MongoDB`)
+      } catch (err) {
+        logger.warn(`MongoDB sync failed for incident ${incident.id}:`, err)
+      }
 
       // Remove from sync queue
       if (queueItem.id !== undefined) {

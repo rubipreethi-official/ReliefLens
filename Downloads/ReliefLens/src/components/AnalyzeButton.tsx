@@ -5,9 +5,10 @@ interface AnalyzeButtonProps {
   onClick: () => void;
   disabled: boolean;
   isAnalyzing: boolean;
+  label?: string;
 }
 
-export const AnalyzeButton: React.FC<AnalyzeButtonProps> = ({ onClick, disabled, isAnalyzing }) => {
+export const AnalyzeButton: React.FC<AnalyzeButtonProps> = ({ onClick, disabled, isAnalyzing, label }) => {
   return (
     <button
       onClick={onClick}
@@ -23,7 +24,7 @@ export const AnalyzeButton: React.FC<AnalyzeButtonProps> = ({ onClick, disabled,
         ) : (
           <>
             <Target className="w-5 h-5 fill-current" />
-            <span>Inference Run</span>
+            <span>{label || 'Inference Run'}</span>
           </>
         )}
       </div>

@@ -13,8 +13,8 @@ export const GEMMA_CONFIG = {
   endpoint: import.meta.env.VITE_GEMMA_API_ENDPOINT as string ??
     'https://generativelanguage.googleapis.com/v1beta',
 
-  /** Model ID — use gemma-2.0-flash-exp or a Gemma 4 variant when available */
-  model: import.meta.env.VITE_GEMMA_MODEL as string ?? 'gemma-2.0-flash-exp',
+  /** Model ID — prioritize VITE_GEMMA_MODEL from .env.local */
+  model: import.meta.env.VITE_GEMMA_MODEL as string ?? 'gemma-4-31b-it',
 
   /** Max tokens for response generation */
   maxOutputTokens: 1024,

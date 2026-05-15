@@ -23,9 +23,16 @@ interface IncidentStoreState {
   incidents: IncidentCard[]
   isLoading: boolean
   error: string | null
+  userLocation: { lat: number; lng: number; address?: string; region?: string; country?: string; countryCode?: string } | null
+  currentLanguage: string
+  availableLanguages: string[]
 
   // Actions
   loadAll: () => Promise<void>
+  setIncidents: (incidents: IncidentCard[]) => void
+  setUserLocation: (loc: { lat: number; lng: number; address?: string; region?: string; country?: string; countryCode?: string } | null) => void
+  setLanguage: (lang: string) => void
+  setAvailableLanguages: (langs: string[]) => void
   createFromDraft: (draft: DraftIncident, isOnline: boolean) => Promise<IncidentCard>
   updateIncident: (id: string, updates: Partial<IncidentCard>) => Promise<void>
   acknowledgeIncident: (id: string, responderName: string) => Promise<void>
@@ -49,6 +56,9 @@ export const useIncidentStore = create<IncidentStoreState>((set, get) => ({
   incidents: [],
   isLoading: false,
   error: null,
+  userLocation: null,
+  currentLanguage: 'English',
+  availableLanguages: ['English'],
 
   /** Load all incidents from IndexedDB into memory */
   loadAll: async () => {
@@ -63,6 +73,12 @@ export const useIncidentStore = create<IncidentStoreState>((set, get) => ({
       set({ error: message, isLoading: false })
     }
   },
+
+  setIncidents: (incidents) => set({ incidents }),
+
+  setUserLocation: (loc) => set({ userLocation: loc }),
+  setLanguage: (lang) => set({ currentLanguage: lang }),
+  setAvailableLanguages: (langs) => set({ availableLanguages: langs }),
 
   /**
    * Create a new incident from a draft (intake flow output).

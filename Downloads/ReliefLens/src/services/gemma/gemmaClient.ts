@@ -11,6 +11,7 @@
 
 import { GEMMA_CONFIG } from '@/config/gemma.config'
 import type {
+  GemmaMessage,
   GemmaRequest,
   GemmaRawResponse,
   GemmaEnrichmentResult,
@@ -18,10 +19,11 @@ import type {
   FunctionCallResult,
 } from '@/types/ai.types'
 import type { DraftIncident } from '@/types/incident.types'
-import { RELIEFLENS_SYSTEM_PROMPT, buildAnalysisPrompt } from './gemmaPrompts'
+import { RELIEFLENS_ENRICH_PROMPT, ARIA_TRIAGE_PROMPT, buildAnalysisPrompt } from './gemmaPrompts'
 import { EXTRACT_INCIDENT_SCHEMA } from './functionSchemas'
 import { extractBase64Data, getMimeTypeFromDataUri } from '@/utils/imageUtils'
 import { createLogger } from '@/utils/logger'
+import { backendApi } from '@/services/api/backendClient'
 
 const logger = createLogger('gemmaClient')
 
@@ -61,7 +63,7 @@ function buildRequest(draft: DraftIncident, ragContext?: string): GemmaRequest {
     contents: [{ role: 'user', parts: userParts }],
     tools: [EXTRACT_INCIDENT_SCHEMA],
     systemInstruction: {
-      parts: [{ text: RELIEFLENS_SYSTEM_PROMPT }],
+      parts: [{ text: RELIEFLENS_ENRICH_PROMPT }],
     },
     generationConfig: {
       temperature: GEMMA_CONFIG.temperature,
@@ -181,11 +183,95 @@ export async function enrichIncident(
       },
     }
   } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      return { success: false, error: `Gemma request timed out after ${GEMMA_CONFIG.timeoutMs}ms` }
-    }
     const message = err instanceof Error ? err.message : 'Unknown error'
     logger.error('Gemma client error:', message)
     return { success: false, error: `Network error: ${message}` }
+  }
+}
+
+/**
+ * Perform a conversational turn with Gemma.
+ * Supports multi-turn history and optional image/location context.
+ */
+export async function chatWithGemma(
+  messages: GemmaMessage[],
+  userLocation?: { lat: number, lng: number, address?: string, region?: string, countryCode?: string } | null
+): Promise<{ success: true; text?: string; extracted?: ExtractedIncidentData } | { success: false; error: string }> {
+  if (!GEMMA_CONFIG.apiKey) {
+    return { success: false, error: 'API key not configured' }
+  }
+
+  // Inject location context if this is the first message
+  let processedMessages = [...messages]
+  if (userLocation && messages.length === 1 && messages[0].role === 'user') {
+    const locStr = `USER_LOCATION: Lat ${userLocation.lat}, Lng ${userLocation.lng}${userLocation.address ? `, Address: ${userLocation.address}` : ''}`
+    
+    // Fetch contacts for the region to inject as context
+    let contactsContext = ''
+    try {
+      const contactsRes = await backendApi.getContacts(userLocation.region || userLocation.address || '', userLocation.countryCode)
+      if (contactsRes.contacts.length > 0) {
+        contactsContext = `\n[LOCAL EMERGENCY CONTACTS: ${JSON.stringify(contactsRes.contacts.slice(0, 5))}]`
+      }
+    } catch (err) {
+      console.warn('Failed to fetch contacts for ARIA context:', err)
+    }
+
+    processedMessages[0].parts.push({ text: `\n\n[SYSTEM CONTEXT: ${locStr}${contactsContext}]` })
+  }
+
+  const request: GemmaRequest = {
+    contents: processedMessages,
+    tools: [EXTRACT_INCIDENT_SCHEMA],
+    systemInstruction: {
+      parts: [{ text: ARIA_TRIAGE_PROMPT }],
+    },
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 1024,
+    },
+  }
+
+  try {
+    const response = await fetch(buildEndpointUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+
+    if (!response.ok) {
+      const errBody = await response.text()
+      return { success: false, error: `API Error ${response.status}: ${errBody.slice(0, 120)}` }
+    }
+
+    const raw: GemmaRawResponse = await response.json()
+    const candidate = raw.candidates?.[0]
+    if (!candidate) return { success: false, error: 'No response from AI' }
+
+    const textPart = candidate.content.parts.find((p) => p.text)
+    const spokenText = textPart?.text?.trim()
+
+    const functionCallPart = candidate.content.parts.find((p) => p.functionCall)
+    if (functionCallPart?.functionCall?.name === 'extract_incident_data') {
+      const extracted = functionCallPart.functionCall.args as unknown as ExtractedIncidentData
+      const confirm =
+        spokenText ||
+        'Stay calm. I have logged your incident and alerted response teams near you. Help is on the way.'
+      return { success: true, extracted, text: confirm }
+    }
+
+    if (spokenText) {
+      // Final safety filter for spoken text leakage
+      const cleanText = spokenText.replace(/^(The user|According to|Plan:|Thinking:|Step \d:|TRIAGE FLOW:)[\s\S]*?(\.|\?|!)\s*/i, '').trim();
+      return { success: true, text: cleanText || spokenText }
+    }
+
+    return {
+      success: true,
+      text: 'Stay calm. What type of emergency are you facing, and roughly how many people need help?',
+    }
+
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }
   }
 }

@@ -1,6 +1,8 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { Target } from 'lucide-react';
+import { useIncidentStore } from '@/store/incidentStore';
+import { t } from '@/utils/i18n';
 
 interface HeroSectionProps {
   onReportClick: () => void;
@@ -8,7 +10,8 @@ interface HeroSectionProps {
 }
 
 export const HeroSection: React.FC<HeroSectionProps> = ({ onReportClick, onCommanderClick }) => {
-  const title = "RELIEFLENS";
+  const { currentLanguage } = useIncidentStore();
+
   return (
     <section className="relative min-h-screen flex items-center justify-center px-4 pt-16 overflow-hidden bg-dot-grid bg-black" id="hero">
       
@@ -27,15 +30,15 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onReportClick, onComma
           </div>
 
           <h1 
-            className="text-5xl sm:text-7xl md:text-8xl font-black tracking-[0.25em] mb-8 text-white relative inline-block font-['Orbitron']"
+            className="text-[clamp(1.5rem,7vw,4rem)] font-black tracking-normal sm:tracking-[0.18em] md:tracking-[0.22em] mb-6 sm:mb-8 text-white relative inline-block font-['Orbitron'] leading-tight px-2 break-words max-w-full"
             style={{ textShadow: '0 0 50px rgba(0,212,255,0.4), 0 0 100px rgba(0,212,255,0.1)' }}
           >
-            {title}
-            <span className="absolute -bottom-2 right-0 text-[10px] tracking-normal font-mono opacity-40">V4.3.0_RELEASE</span>
+            {t('hero.title', currentLanguage)}
+            <span className="hidden sm:inline absolute -bottom-2 right-0 text-[10px] tracking-normal font-mono opacity-40">V4.3.0</span>
           </h1>
 
-          <p className="text-lg sm:text-xl md:text-2xl font-bold tracking-[0.1em] text-[#8BA3C7] mb-12 max-w-2xl mx-auto uppercase">
-            Disaster Decision Acceleration System
+          <p className="text-sm sm:text-lg md:text-xl font-bold tracking-[0.06em] sm:tracking-[0.1em] text-[#8BA3C7] mb-10 sm:mb-12 max-w-2xl mx-auto uppercase px-2">
+            {t('hero.subtitle', currentLanguage)}
           </p>
 
           <div className="flex flex-col sm:flex-row gap-6 justify-center max-w-lg mx-auto">
@@ -43,13 +46,13 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onReportClick, onComma
               onClick={onReportClick}
               className="flex-1 py-5 px-10 rounded-2xl bg-[#00D4FF] text-black font-black tracking-[0.2em] text-xs hover:bg-[#33DDFF] transition-all shadow-[0_0_40px_rgba(0,212,255,0.3)] hover:scale-105 active:scale-95 uppercase"
             >
-              Report Incident
+              {t('hero.report', currentLanguage)}
             </button>
             <button
               onClick={onCommanderClick}
               className="flex-1 py-5 px-10 rounded-2xl bg-transparent border-2 border-[#00D4FF]/40 text-[#00D4FF] font-black tracking-[0.2em] text-xs hover:border-[#00D4FF] hover:bg-[#00D4FF]/5 transition-all uppercase"
             >
-              Commander Node
+              {t('hero.commander', currentLanguage)}
             </button>
           </div>
 

@@ -2,17 +2,22 @@ import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { IncidentCard } from './IncidentCard';
 import { Layers } from 'lucide-react';
+import { useIncidentStore } from '@/store/incidentStore';
+import { t } from '@/utils/i18n';
 import type { IncidentCard as IncidentCardType } from '@/types/incident.types';
 
 interface IncidentCardListProps {
   incidents: IncidentCardType[];
   onReview?: (id: string) => void;
+  onDelete?: (id: string) => void;
 }
 
 export const IncidentCardList: React.FC<IncidentCardListProps> = ({
   incidents,
-  onReview
+  onReview,
+  onDelete
 }) => {
+  const { currentLanguage } = useIncidentStore();
   const containerVariants = {
     hidden: { opacity: 0 },
     visible: {
@@ -46,10 +51,10 @@ export const IncidentCardList: React.FC<IncidentCardListProps> = ({
         </div>
         <div className="flex flex-col">
           <span className="font-bold text-sm text-[#E8F4FD]">
-            Assessed Incidents
+            {t('cards.assessed', currentLanguage)}
           </span>
           <span className="text-[11px] text-[#8BA3C7]">
-            {incidents.length} active {incidents.length === 1 ? 'report' : 'reports'}
+            {incidents.length} {t('cards.active', currentLanguage)}
           </span>
         </div>
       </div>
@@ -68,7 +73,7 @@ export const IncidentCardList: React.FC<IncidentCardListProps> = ({
               layout
               className="flex"
             >
-              <IncidentCard incident={incident} onReview={onReview} />
+              <IncidentCard incident={incident} onReview={onReview} onDelete={onDelete} />
             </motion.div>
           ))}
         </AnimatePresence>
