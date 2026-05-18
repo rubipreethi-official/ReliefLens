@@ -5,6 +5,7 @@ import { reverseGeocode } from './services/geocode.js'
 import {
   scrapeEmergencyContacts,
   getContactsForLocation,
+  seedDefaultContacts,
 } from './services/contactScraper.js'
 import {
   scrapeFirstAidForDisaster,
@@ -14,6 +15,7 @@ import { fetchRecentDisasters } from './services/disasterFeed.js'
 import { sendCriticalReport } from './services/emailService.js'
 import { gemmaGenerateText } from './services/gemmaServer.js'
 import { getDb } from './db.js'
+import { seedDefaultRecipients, getAlertRecipients } from './services/alertRecipients.js'
 
 const app = express()
 app.use(cors())
@@ -133,8 +135,34 @@ app.post('/api/incidents/critical-report', async (req, res) => {
     if (!payload?.incidentId) {
       return res.status(400).json({ error: 'payload with incidentId required' })
     }
-    const contacts = await getContactsForLocation(region || '', countryCode)
-    const result = await sendCriticalReport(contacts, payload)
+
+    // Set timestamp if not provided
+    if (!payload.timestamp) {
+      payload.timestamp = new Date().toISOString()
+    }
+
+    // Resolve district from region if not set
+    if (!payload.district && region) {
+      payload.district = region
+    }
+
+    // Fetch scraped contacts and DB alert recipients in parallel
+    const [contacts, alertRecipients] = await Promise.all([
+      getContactsForLocation(region || '', countryCode),
+      getAlertRecipients({
+        district: payload.district || region || '',
+        taluk: payload.taluk || '',
+        region: region || '',
+        includeGlobal: true,
+      }),
+    ])
+
+    const result = await sendCriticalReport(contacts, payload, alertRecipients)
+
+    console.log(`[API] Critical report: sent=${result.sent.length}, failed=${result.failed.length}, superCritical=${result.superCriticalSent}`)
+    if (result.sent.length > 0) console.log('[API] Sent to:', result.sent)
+    if (result.failed.length > 0) console.error('[API] Failed:', result.failed)
+
     res.json(result)
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Email failed' })
@@ -146,6 +174,10 @@ app.listen(SERVER_CONFIG.port, async () => {
   try {
     await getDb()
     console.log('[Startup] Database connection verified.')
+    // Seed default alert recipients (idempotent)
+    await seedDefaultRecipients()
+    // Seed default emergency contacts (idempotent)
+    await seedDefaultContacts()
   } catch (err) {
     console.error('[Startup] Database connection FAILED:', err instanceof Error ? err.message : err)
   }

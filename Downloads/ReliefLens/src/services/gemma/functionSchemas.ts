@@ -129,6 +129,10 @@ export const EXTRACT_INCIDENT_SCHEMA: GemmaTool = {
             enum: ['good', 'poor', 'unusable'],
             description: 'Quality assessment of the provided image (if any)',
           },
+          speech_response: {
+            type: 'string',
+            description: 'The spoken supportive response to the user. MUST be exactly 4 sequences: Reassurance, Action, Advice, Instruction. Do NOT include titles like "Reassurance:" or serial numbers. Speak entirely in the user\'s language.',
+          },
           failure_notes: {
             type: 'string',
             description: 'Notes on why confidence is low or what information is missing',

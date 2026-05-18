@@ -88,7 +88,7 @@ export const backendApi = {
     region: string,
     countryCode?: string
   ) =>
-    apiFetch<{ sent: string[]; failed: string[] }>('/api/incidents/critical-report', {
+    apiFetch<{ sent: string[]; failed: string[]; superCriticalSent: boolean }>('/api/incidents/critical-report', {
       method: 'POST',
       body: JSON.stringify({ payload, region, countryCode }),
     }),

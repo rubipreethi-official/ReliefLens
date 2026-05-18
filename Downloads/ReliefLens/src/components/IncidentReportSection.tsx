@@ -136,20 +136,7 @@ export const IncidentReportSection: React.FC<IncidentReportSectionProps> = ({
           }
           onIncidentExtracted(ext);
           setAnalysisStatus('Incident card created.');
-          if (openChat) {
-            setIsChatActive(true);
-            setChatHistory([
-              {
-                role: 'model',
-                parts: [
-                  {
-                    text: 'I analyzed your report and created an incident card. Emergency teams are being coordinated.',
-                  },
-                ],
-              },
-            ]);
-            setTimeout(() => setIsChatActive(false), 2500);
-          }
+          setIsChatActive(false);
           return;
         }
 

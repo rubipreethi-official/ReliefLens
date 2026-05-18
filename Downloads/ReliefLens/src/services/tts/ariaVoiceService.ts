@@ -1,28 +1,33 @@
 /**
  * ariaVoiceService.ts — single-voice playback (Gemini TTS OR Web Speech, never both).
+ *
+ * Priority:
+ *   1. Gemini TTS (gemini-2.5-flash-preview-tts) — high quality
+ *   2. Web Speech API fallback — female voice, fires ONLY if Gemini fails
+ *
+ * Mutual exclusion: a shared `speechGeneration` counter aborts stale requests.
+ * Both engines check the generation before/after async ops.
  */
 
-const TTS_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro']
-
-const VOICE_ALIASES: Record<string, string> = {
-  Charis: 'Aoede',
-  Charon: 'Charon',
-}
+const TTS_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-2.5-flash-preview-tts',
+  'gemini-2.0-flash-exp',
+]
 
 let speechGeneration = 0
 let activeAudioContext: AudioContext | null = null
 let activeSource: AudioBufferSourceNode | null = null
 let activeUtterance: SpeechSynthesisUtterance | null = null
+let geminiPlaying = false  // mutual-exclusion flag
 
 export const cancelAriaSpeech = (): void => {
   speechGeneration += 1
+  geminiPlaying = false
 
   if (activeSource) {
-    try {
-      activeSource.stop()
-    } catch {
-      /* already stopped */
-    }
+    try { activeSource.stop() } catch { /* already stopped */ }
     activeSource = null
   }
   if (activeAudioContext) {
@@ -42,35 +47,34 @@ export const cancelAriaSpeech = (): void => {
 export const speakAsARIA = async (
   text: string,
   onStart?: () => void,
-  onEnd?: () => void
+  onEnd?: () => void,
+  lang?: string  // BCP-47 language tag hint for Web Speech fallback (e.g. 'ta-IN', 'hi-IN')
 ): Promise<void> => {
   const gen = speechGeneration + 1
   speechGeneration = gen
   cancelAriaSpeech()
-  speechGeneration = gen
+  speechGeneration = gen   // restore after cancel incremented it
 
-  // Clean the text to ensure no technical headers or punctuations are read out literally
+  // Sanitise text
   let sanitized = text.trim()
-    // Remove reasoning artifacts
-    .replace(/^(The user|According to|Plan:|Thinking:|Step \d:|TRIAGE FLOW:)[\s\S]*?(\.|\?|!)\s*/i, '')
-    // Remove common symbols that might cause issues
     .replace(/[*_#\[\]()<>]/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim();
+    .trim()
 
-  if (!sanitized) {
-    onEnd?.()
-    return
-  }
+  if (!sanitized) { onEnd?.(); return }
 
-  const geminiPlayed = await tryGeminiTTS(sanitized, onStart, onEnd, gen)
-  if (gen !== speechGeneration) return
-  
-  if (!geminiPlayed) {
-    console.warn('[ARIA] Gemini TTS failed, and Web Speech is disabled for quality reasons.')
-    onEnd?.()
+  // Try Gemini TTS first (Aoede is natively multilingual)
+  const geminiOk = await tryGeminiTTS(sanitized, onStart, onEnd, gen)
+  if (gen !== speechGeneration) return   // cancelled while awaiting
+
+  if (!geminiOk) {
+    // Gemini failed — fall back to Web Speech with female voice
+    console.warn('[ARIA] Gemini TTS unavailable, using Web Speech API fallback.')
+    await tryWebSpeechFallback(sanitized, onStart, onEnd, gen, lang)
   }
 }
+
+// ─── Gemini TTS ───────────────────────────────────────────────────────────────
 
 const tryGeminiTTS = async (
   text: string,
@@ -82,12 +86,13 @@ const tryGeminiTTS = async (
   if (gen !== undefined && gen !== speechGeneration) return false
 
   const apiKey = import.meta.env.VITE_GOOGLE_AI_API_KEY
-  const rawVoice = import.meta.env.VITE_ARIA_VOICE_NAME || 'Aoede'
-  const voiceName = VOICE_ALIASES[rawVoice] || rawVoice
+  // Force Aoede female voice for ARIA to guarantee female-only speech
+  const voiceName = 'Aoede'
 
   if (!apiKey || modelIndex >= TTS_MODELS.length) return false
 
   const modelName = TTS_MODELS[modelIndex]
+  console.info(`[ARIA TTS] Trying model: ${modelName} with voice: ${voiceName}`)
 
   try {
     const response = await fetch(
@@ -100,7 +105,9 @@ const tryGeminiTTS = async (
             {
               parts: [
                 {
-                  text: `Say in a calm, steady, reassuring female emergency-response tone:\n${text}`,
+                  // Speak the text directly — Aoede auto-detects language (Tamil, Hindi, English, etc.)
+                  // Do NOT add English prefixes like "TTS_INPUT:" as they confuse non-English output
+                  text: text,
                 },
               ],
             },
@@ -118,39 +125,60 @@ const tryGeminiTTS = async (
     )
 
     if (!response.ok) {
+      const errText = await response.text().catch(() => response.status.toString())
+      console.warn(`[ARIA TTS] Model ${modelName} returned ${response.status}: ${errText.slice(0, 120)}`)
       return tryGeminiTTS(text, onStart, onEnd, gen, modelIndex + 1)
     }
 
     const data = await response.json()
-    const audioPart = data.candidates?.[0]?.content?.parts?.find(
-      (p: { inlineData?: { data?: string } }) => p.inlineData
+    const parts = data.candidates?.[0]?.content?.parts || []
+    const audioPart = parts.find(
+      (p: { inlineData?: { data?: string; mimeType?: string } }) => p.inlineData?.data
     )
-    const audioData = audioPart?.inlineData?.data
+    const audioData: string | undefined = audioPart?.inlineData?.data
+    const mimeType: string = audioPart?.inlineData?.mimeType || 'audio/wav'
 
     if (!audioData) {
+      console.warn(`[ARIA TTS] Model ${modelName}: no audio data in response.`, data)
       return tryGeminiTTS(text, onStart, onEnd, gen, modelIndex + 1)
     }
 
     if (gen !== undefined && gen !== speechGeneration) return false
 
+    // Decode base64 audio
     const binaryStr = atob(audioData)
     const bytes = new Uint8Array(binaryStr.length)
     for (let i = 0; i < binaryStr.length; i++) {
       bytes[i] = binaryStr.charCodeAt(i)
     }
 
+    // Determine if we need to add a WAV header (PCM-only response)
+    const isPcm = mimeType.includes('pcm') || mimeType.includes('l16') || mimeType === 'audio/wav'
+    const audioBuffer = isPcm ? addWAVHeader(bytes, 24000, 1, 16) : bytes.buffer
+
     const AudioCtx =
       window.AudioContext ||
       (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
     const audioContext = new AudioCtx()
-    const wavBuffer = addWAVHeader(bytes, 24000, 1, 16)
 
-    let audioBuffer: AudioBuffer
+    let decodedBuffer: AudioBuffer
     try {
-      audioBuffer = await audioContext.decodeAudioData(wavBuffer.slice(0))
-    } catch {
-      audioContext.close().catch(() => {})
-      return tryGeminiTTS(text, onStart, onEnd, gen, modelIndex + 1)
+      decodedBuffer = await audioContext.decodeAudioData(audioBuffer.slice(0))
+    } catch (decodeErr) {
+      console.warn('[ARIA TTS] Decode failed, trying WAV wrap:', decodeErr)
+      // If decode failed and we didn't wrap, try wrapping
+      if (!isPcm) {
+        try {
+          const wrapped = addWAVHeader(bytes, 24000, 1, 16)
+          decodedBuffer = await audioContext.decodeAudioData(wrapped.slice(0))
+        } catch {
+          audioContext.close().catch(() => {})
+          return tryGeminiTTS(text, onStart, onEnd, gen, modelIndex + 1)
+        }
+      } else {
+        audioContext.close().catch(() => {})
+        return tryGeminiTTS(text, onStart, onEnd, gen, modelIndex + 1)
+      }
     }
 
     if (gen !== undefined && gen !== speechGeneration) {
@@ -161,11 +189,12 @@ const tryGeminiTTS = async (
     activeAudioContext = audioContext
     const source = audioContext.createBufferSource()
     activeSource = source
-    source.buffer = audioBuffer
+    source.buffer = decodedBuffer
     source.connect(audioContext.destination)
 
     return new Promise<boolean>((resolve) => {
       source.onended = () => {
+        geminiPlaying = false
         if (gen === undefined || gen === speechGeneration) {
           onEnd?.()
         }
@@ -175,17 +204,132 @@ const tryGeminiTTS = async (
         resolve(true)
       }
       try {
+        if (typeof window !== 'undefined' && window.speechSynthesis) {
+          window.speechSynthesis.cancel() // Strict mutual exclusion
+        }
+        geminiPlaying = true
         source.start(0)
         onStart?.()
-        resolve(true)
-      } catch {
+        // Don't resolve(true) here — wait for onended
+      } catch (startErr) {
+        console.error('[ARIA TTS] Source start failed:', startErr)
+        geminiPlaying = false
         resolve(false)
       }
     })
-  } catch {
+  } catch (err) {
+    console.warn(`[ARIA TTS] Model ${modelName} exception:`, err)
     return tryGeminiTTS(text, onStart, onEnd, gen, modelIndex + 1)
   }
 }
+
+// ─── Web Speech API Fallback (female voice) ───────────────────────────────────
+
+const tryWebSpeechFallback = (
+  text: string,
+  onStart?: () => void,
+  onEnd?: () => void,
+  gen?: number,
+  lang?: string  // BCP-47 language hint
+): Promise<void> => {
+  return new Promise((resolve) => {
+    if (gen !== undefined && gen !== speechGeneration) { resolve(); return }
+    if (geminiPlaying) { resolve(); return }  // Gemini started — do not overlap
+
+    const synth = window.speechSynthesis
+    if (!synth) { onEnd?.(); resolve(); return }
+
+    synth.cancel()  // clear any previous
+
+
+
+    const utter = new SpeechSynthesisUtterance(text)
+    utter.rate = 0.95
+    utter.pitch = 1.1  // slightly higher pitch for female voice
+    if (lang) utter.lang = lang  // set language for correct pronunciation
+
+    const doSpeak = () => {
+      if (gen !== undefined && gen !== speechGeneration) { resolve(); return }
+      if (geminiPlaying) { resolve(); return }
+
+      const voices = synth.getVoices()
+
+      // Try to find a voice for the requested language first
+      let voice: SpeechSynthesisVoice | null = null
+      if (lang) {
+        // First try to find a known female voice for this language
+        voice = voices.find((v) => (v.lang === lang || v.lang.startsWith(lang.split('-')[0])) && (v.name.toLowerCase().includes('female') || v.name.toLowerCase().includes('samantha') || v.name.toLowerCase().includes('lekha'))) ||
+                voices.find((v) => v.lang === lang) ||
+                voices.find((v) => v.lang.startsWith(lang.split('-')[0])) ||
+                null
+      }
+
+      // Fall back to preferred female English voices
+      if (!voice) {
+        const preferredNames = [
+          'Google UK English Female',
+          'Samantha',
+          'Victoria',
+          'Karen',
+          'Moira',
+          'Tessa',
+          'Google US English',
+        ]
+        for (const name of preferredNames) {
+          const v = voices.find((v) => v.name.includes(name))
+          if (v) { voice = v; break }
+        }
+      }
+
+      // Last resort: any female-sounding voice or first English voice
+      if (!voice) {
+        voice = voices.find((v) => v.name.toLowerCase().includes('female')) ||
+                voices.find((v) => v.lang.startsWith('en')) ||
+                null
+      }
+
+      if (voice) utter.voice = voice
+
+      activeUtterance = utter
+
+      utter.onstart = () => {
+        if (gen !== undefined && gen !== speechGeneration) {
+          synth.cancel()
+          resolve()
+          return
+        }
+        onStart?.()
+      }
+
+      utter.onend = () => {
+        activeUtterance = null
+        if (gen === undefined || gen === speechGeneration) onEnd?.()
+        resolve()
+      }
+
+      utter.onerror = (e) => {
+        console.warn('[ARIA WebSpeech] Error:', e.error)
+        activeUtterance = null
+        onEnd?.()
+        resolve()
+      }
+
+      synth.speak(utter)
+    }
+
+    // Voices may not be loaded yet
+    if (synth.getVoices().length > 0) {
+      doSpeak()
+    } else {
+      synth.onvoiceschanged = () => {
+        synth.onvoiceschanged = null
+        doSpeak()
+      }
+    }
+  })
+}
+
+// ─── WAV Header Builder ───────────────────────────────────────────────────────
 
 const addWAVHeader = (
   pcmData: Uint8Array,

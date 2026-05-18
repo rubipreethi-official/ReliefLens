@@ -243,8 +243,13 @@ export const CommanderSection: React.FC<CommanderSectionProps> = ({
               />
 
               {incidents.map((inc) => {
-                const lat = inc.where?.lat || defaultCenter[0] + (inc.priorityScore % 10 - 5) * 0.01;
-                const lng = inc.where?.lng || defaultCenter[1] + (inc.confidence * 10 - 5) * 0.01;
+                // Ensure lat/lng are strictly numbers to prevent react-leaflet NaN crashes
+                let lat = Number(inc.where?.lat);
+                if (isNaN(lat)) lat = defaultCenter[0] + (Number(inc.priorityScore || 85) % 10 - 5) * 0.01;
+                
+                let lng = Number(inc.where?.lng);
+                if (isNaN(lng)) lng = defaultCenter[1] + (Number(inc.confidence || 0.8) * 10 - 5) * 0.01;
+                
                 const color = getMarkerColor(inc.severity);
                 const isSelected = selectedIncidentId === inc.id;
                 const isCritical = inc.severity === 'critical';

@@ -25,6 +25,99 @@ import { extractBase64Data, getMimeTypeFromDataUri } from '@/utils/imageUtils'
 import { createLogger } from '@/utils/logger'
 import { backendApi } from '@/services/api/backendClient'
 
+// ─── Speech Filter ────────────────────────────────────────────────────────────
+
+/**
+ * Extract ONLY the spoken portion of ARIA's response.
+ * Layer A (internal/silent): everything before SPEAKING:
+ * Layer B (spoken via TTS): the SPEAKING: block
+ *
+ * If no SPEAKING: block exists, strip all known reasoning artefacts
+ * and return whatever clean text remains, or a safe default.
+ */
+export function extractSpeechOnly(text: string): string {
+  if (!text) return ''
+
+  // 1. Prefer explicit SPEAKING: block
+  const speakingMatch = text.match(/SPEAKING:\s*([\s\S]*?)(?:$|(?=\nTHINKING:))/i)
+  if (speakingMatch?.[1]?.trim()) {
+    return cleanSpeechText(speakingMatch[1].trim())
+  }
+
+  // 2. Strip THINKING: block entirely, then take the rest
+  const withoutThinking = text
+    .replace(/THINKING:[\s\S]*?(?=SPEAKING:|$)/i, '')
+    .replace(/SPEAKING:/i, '')
+    .trim()
+
+  if (withoutThinking) {
+    // 3. Strip known reasoning artefacts from whatever remains
+    const stripped = withoutThinking
+      .replace(/^(Step \d+:|Plan:|Let me|I need to|Processing|Analyzing|The user|According to|Incident type:|Hazards:|Confidence:|incident_type|severity|urgency_flags)[\s\S]*?(\.|\?|!)\s*/gim, '')
+      .replace(/\{[\s\S]*?\}/g, '')   // remove JSON blobs
+      .replace(/\[[\s\S]*?\]/g, '')    // remove JSON arrays
+      .replace(/[*_#`]/g, '')          // remove markdown
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (stripped.length > 10) return cleanSpeechText(stripped)
+  }
+
+  // 4. Safe default — should rarely be hit
+  return 'Stay calm. Help is on the way. Please use the Super Critical button on your dashboard if needed.'
+}
+
+/**
+ * Split a speech string into the four required ARIA parts.
+ * Returns object with keys: reassurance, action, advice, instruction.
+ * If the model provides fewer than four sentences, sensible defaults are used.
+ */
+export function splitIntoFourParts(speech: string): { reassurance: string; action: string; advice: string; instruction: string } {
+  const defaults = {
+    reassurance: 'Calm down, I am here to help you.',
+    action: 'I am notifying the rescue teams in your area and preparing your report immediately.',
+    advice: 'Do not enter the water yourself. Try to reach for a floating object to throw to those in danger.',
+    instruction: 'Use the Super Critical Report button in your dashboard for immediate escalation.'
+  }
+
+  if (!speech || !speech.trim()) return defaults
+
+  // Split into sentences (simple heuristic)
+  const sentences = speech
+    .replace(/\s+/g, ' ')
+    .split(/(?<=[.!?])\s+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+
+  const parts = [defaults.reassurance, defaults.action, defaults.advice, defaults.instruction]
+
+  for (let i = 0; i < Math.min(4, sentences.length); i++) {
+    parts[i] = sentences[i]
+  }
+
+  return {
+    reassurance: parts[0],
+    action: parts[1],
+    advice: parts[2],
+    instruction: parts[3],
+  }
+}
+
+function cleanSpeechText(text: string): string {
+  let cleaned = text
+    .replace(/[*_#`\[\]{}()<>]/g, ' ')  // remove special chars
+    // Remove titles like "1. Reassurance:" or "Reassurance:" or "- Action:"
+    .replace(/(?:^\s*|\.\s+)(?:\d+\.\s*)?(?:Reassurance|Action|Advice|Instruction)\s*:/gi, '. ')
+    // Remove standalone leading serial numbers (1. 2. 3. 4.) at start of lines/sentences
+    .replace(/(?:^\s*|\n\s*|\.\s+)\d+\.\s+/g, '. ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    
+  // Clean up any leading dot from replacement
+  cleaned = cleaned.replace(/^\.\s*/, '')
+  return cleaned
+}
+
 const logger = createLogger('gemmaClient')
 
 // ─── API Endpoint ─────────────────────────────────────────────────────────────
@@ -249,26 +342,32 @@ export async function chatWithGemma(
     if (!candidate) return { success: false, error: 'No response from AI' }
 
     const textPart = candidate.content.parts.find((p) => p.text)
-    const spokenText = textPart?.text?.trim()
+    const rawText = textPart?.text?.trim() || ''
 
     const functionCallPart = candidate.content.parts.find((p) => p.functionCall)
     if (functionCallPart?.functionCall?.name === 'extract_incident_data') {
       const extracted = functionCallPart.functionCall.args as unknown as ExtractedIncidentData
-      const confirm =
-        spokenText ||
-        'Stay calm. I have logged your incident and alerted response teams near you. Help is on the way.'
-      return { success: true, extracted, text: confirm }
+      const rawSpeech = (extracted as any).speech_response || rawText || 'Stay calm. I have logged your incident and alerted response teams near you. Help is on the way.'
+      
+      // Always filter through extractSpeechOnly just in case
+      const spokenText = extractSpeechOnly(rawSpeech)
+      const speechParts = splitIntoFourParts(spokenText)
+      
+      return { success: true, extracted, text: spokenText, rawModelText: rawText || JSON.stringify(extracted), speechParts }
     }
 
-    if (spokenText) {
-      // Final safety filter for spoken text leakage
-      const cleanText = spokenText.replace(/^(The user|According to|Plan:|Thinking:|Step \d:|TRIAGE FLOW:)[\s\S]*?(\.|\?|!)\s*/i, '').trim();
-      return { success: true, text: cleanText || spokenText }
+    if (rawText) {
+      // Always filter through extractSpeechOnly — never pass raw model output to TTS
+      const spokenText = extractSpeechOnly(rawText)
+      const speechParts = splitIntoFourParts(spokenText)
+      return { success: true, text: spokenText, rawModelText: rawText, speechParts }
     }
 
     return {
       success: true,
       text: 'Stay calm. What type of emergency are you facing, and roughly how many people need help?',
+      rawModelText: '',
+      speechParts: splitIntoFourParts('')
     }
 
   } catch (err) {

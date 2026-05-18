@@ -30,63 +30,167 @@ interface ExtractedContactsPayload {
   }>
 }
 
+// ─── Priority sources for Tamil Nadu / India ──────────────────────────────────
+
+const INDIA_TN_SOURCES = [
+  'https://tnsdma.tn.gov.in/',               // Tamil Nadu SDMA — primary
+  'https://www.tn.gov.in/department/19',      // Revenue & Disaster Mgmt dept
+  'https://ndma.gov.in/Resources/disaster-management-contacts',
+  'https://www.ndrf.gov.in/',
+  'https://www.nhp.gov.in/',
+]
+
 const FALLBACK_SOURCES: Record<string, string[]> = {
-  IN: [
-    'https://ndma.gov.in/',
-    'https://www.ndrf.gov.in/',
-    'https://www.nhp.gov.in/',
-  ],
+  IN: INDIA_TN_SOURCES,
   US: ['https://www.fema.gov/', 'https://www.redcross.org/'],
   DEFAULT: ['https://reliefweb.int/', 'https://www.who.int/emergencies'],
 }
 
+// ─── TNSDMA hardcoded fallback contacts ───────────────────────────────────────
+
+const TNSDMA_STATIC_CONTACTS: ScrapedContact[] = [
+  {
+    name: 'TNSDMA State Disaster Helpline',
+    designation: 'State Helpline',
+    roleOrOrganization: 'Tamil Nadu State Disaster Management Authority',
+    phone: '1070',
+    email: '',
+    category: 'Disaster Management',
+    sourceUrl: 'static-tnsdma',
+    regions: ['Tamil Nadu', 'India'],
+    countryCode: 'IN',
+    scrapedAt: new Date().toISOString(),
+  },
+  {
+    name: 'National Emergency Number',
+    designation: 'Emergency Hotline',
+    roleOrOrganization: 'Government of India',
+    phone: '112',
+    email: '',
+    category: 'Official Support',
+    sourceUrl: 'static-fallback',
+    regions: ['India'],
+    countryCode: 'IN',
+    scrapedAt: new Date().toISOString(),
+  },
+  {
+    name: 'NDRF Helpline',
+    designation: 'Disaster Response',
+    roleOrOrganization: 'National Disaster Response Force',
+    phone: '011-24363260',
+    email: 'ndrf@nic.in',
+    category: 'Disaster Management',
+    sourceUrl: 'static-ndrf',
+    regions: ['India'],
+    countryCode: 'IN',
+    scrapedAt: new Date().toISOString(),
+  },
+]
+
+// ─── Phone / Email Validators ─────────────────────────────────────────────────
+
+function isValidIndianPhone(phone: string): boolean {
+  const cleaned = phone.replace(/[\s\-().]/g, '')
+  return /^(\+91|0)?[6-9]\d{9}$/.test(cleaned) || /^\d{3,6}$/.test(cleaned) // include short emergency numbers
+}
+
+function isValidGenericPhone(phone: string): boolean {
+  const cleaned = phone.replace(/[\s\-().+]/g, '')
+  return /^\d{4,15}$/.test(cleaned)
+}
+
+function isValidEmail(email: string): boolean {
+  return /@.+\..+/.test(email) && !email.includes('example.com') && !email.includes('test@')
+}
+
+function validatePhone(phone: string, countryCode: string): boolean {
+  if (!phone) return false
+  return countryCode === 'IN' ? isValidIndianPhone(phone) : isValidGenericPhone(phone)
+}
+
+// ─── HTML → structured text (preserving tables) ───────────────────────────────
+
 async function fetchPageSnippet(url: string): Promise<string> {
   try {
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 12000)
+    const timeout = setTimeout(() => controller.abort(), 15000)
     const res = await fetch(url, {
       signal: controller.signal,
-      headers: { 'User-Agent': 'ReliefLens/1.0 (disaster-relief-research)' },
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; ReliefLens/1.0; disaster-relief-research)',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
     })
     clearTimeout(timeout)
     if (!res.ok) return ''
     const html = await res.text()
-    return html
+
+    // Preserve table structure — strip only non-data tags
+    const stripped = html
       .replace(/<script[\s\S]*?<\/script>/gi, ' ')
       .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<nav[\s\S]*?<\/nav>/gi, ' ')
+      .replace(/<header[\s\S]*?<\/header>/gi, ' ')
+      .replace(/<footer[\s\S]*?<\/footer>/gi, ' ')
+      .replace(/<(meta|link|svg|path|img|button|form|input)[^>]*\/?>/gi, ' ')
+      // Flatten table structure to readable rows (preserve data)
+      .replace(/<\/tr>/gi, '\n')
+      .replace(/<\/?t[dh][^>]*>/gi, ' | ')
+      .replace(/<\/?t(able|head|body|foot|r)[^>]*>/gi, '\n')
+      // Strip remaining HTML tags
       .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&#\d+;/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
-      .slice(0, 12000)
+      .slice(0, 15000)  // slightly larger for tables
+
+    return stripped
   } catch {
     return ''
   }
 }
 
+// ─── Main Scraper ─────────────────────────────────────────────────────────────
+
 export async function scrapeEmergencyContacts(location: GeocodedLocation): Promise<ScrapedContact[]> {
-  console.log(`[Scraper] Starting scrape for: ${location.address} (${location.region}, ${location.country})`);
-  
-  let plan: ScrapePlan = { sources: [] };
+  console.log(`[Scraper] Starting scrape for: ${location.address} (${location.region}, ${location.country})`)
+
+  // For Tamil Nadu, inject high-value TNSDMA sources at the top
+  const isTamilNadu = location.region?.toLowerCase().includes('tamil') ||
+    location.address?.toLowerCase().includes('tamil') ||
+    location.address?.toLowerCase().includes('madurai') ||
+    location.address?.toLowerCase().includes('thirumangalam')
+
+  let plan: ScrapePlan = { sources: [] }
   try {
     plan = await gemmaGenerateJson<ScrapePlan>(
-    `You are a disaster relief intelligence planner. Given a user location, list 3-6 authoritative public URLs 
-    (government disaster management, civil defence, national emergency numbers, Red Cross/NGO helplines) 
-    likely to contain emergency contacts for that region. Prefer .gov and official NGO domains.`,
-    `Location: ${location.address}
+      `You are a disaster relief intelligence planner. Given a user location, list 3-6 authoritative public URLs 
+      (government disaster management, civil defence, national emergency numbers, Red Cross/NGO helplines) 
+      likely to contain emergency contacts for that region.
+      
+      For Tamil Nadu, India: prioritise tnsdma.tn.gov.in and tn.gov.in.
+      For other Indian districts: include ndma.gov.in, ndrf.gov.in.
+      Prefer .gov.in, .nic.in, .gov domains. Avoid Wikipedia.`,
+      `Location: ${location.address}
 Region: ${location.region}
 Country: ${location.country} (${location.countryCode})
 Coordinates: ${location.lat}, ${location.lng}
 
 Return JSON: { "sources": [{ "url": "https://...", "reason": "..." }] }`
-  )
-    console.log(`[Scraper] AI generated ${plan.sources?.length || 0} potential sources.`);
+    )
+    console.log(`[Scraper] AI generated ${plan.sources?.length || 0} potential sources.`)
   } catch (err) {
-    console.error(`[Scraper] Failed to generate scrape plan:`, err);
+    console.error(`[Scraper] Failed to generate scrape plan:`, err)
   }
 
-  const fallback = FALLBACK_SOURCES[location.countryCode] || FALLBACK_SOURCES.DEFAULT
+  const fallback = isTamilNadu ? INDIA_TN_SOURCES : (FALLBACK_SOURCES[location.countryCode] || FALLBACK_SOURCES.DEFAULT)
   const urls = [
     ...new Set([
+      ...(isTamilNadu ? INDIA_TN_SOURCES.slice(0, 2) : []),  // TN sources first
       ...(plan.sources?.map((s) => s.url) || []),
       ...fallback,
     ]),
@@ -96,36 +200,42 @@ Return JSON: { "sources": [{ "url": "https://...", "reason": "..." }] }`
   const now = new Date().toISOString()
 
   for (const url of urls) {
-    console.log(`[Scraper] Fetching snippet from: ${url}`);
+    console.log(`[Scraper] Fetching: ${url}`)
     const snippet = await fetchPageSnippet(url)
     if (!snippet) {
-      console.warn(`[Scraper] No content retrieved from ${url}`);
+      console.warn(`[Scraper] No content from ${url}`)
       continue
     }
-    console.log(`[Scraper] Retrieved ${snippet.length} chars from ${url}. Extracting contacts...`);
+    console.log(`[Scraper] ${snippet.length} chars retrieved from ${url}. Extracting...`)
 
     try {
       const extracted = await gemmaGenerateJson<ExtractedContactsPayload>(
         `Extract emergency contacts from web page text for disaster relief in ${location.country}.
-        Only include entries you can infer from the text or well-known official numbers for that country.
+        Look especially for table rows containing names, phone numbers, and emails.
+        Validate Indian phones: must start with +91, 0, or digits 6-9, and be 10 digits (or short codes like 1070, 112).
+        Validate emails: must contain @ and a real domain.
         Categories: Official Support, Medical, NGO, Fire, Police, Disaster Management.`,
         `Source URL: ${url}
 Region context: ${location.region}, ${location.country}
 
-Page text:
+Page text (including table rows formatted as | col | col |):
 ${snippet}
 
-Return JSON: { "contacts": [{ "name", "designation", "organization", "phone", "email", "category" }] }`
+Return JSON: { "contacts": [{ "name": "...", "designation": "...", "organization": "...", "phone": "...", "email": "...", "category": "..." }] }
+Only include contacts where phone or email is non-empty and valid.`
       )
 
       for (const c of extracted.contacts || []) {
-        if (!c.phone && !c.email) continue
+        const hasValidPhone = validatePhone(c.phone, location.countryCode)
+        const hasValidEmail = isValidEmail(c.email)
+        if (!hasValidPhone && !hasValidEmail) continue
+
         const contact: ScrapedContact = {
           name: c.name || 'Emergency Contact',
           designation: c.designation || c.category,
           roleOrOrganization: c.organization || c.category,
-          phone: c.phone || '',
-          email: c.email || '',
+          phone: hasValidPhone ? c.phone : '',
+          email: hasValidEmail ? c.email : '',
           category: c.category || 'Official Support',
           sourceUrl: url,
           regions: [location.region, location.country],
@@ -134,20 +244,21 @@ Return JSON: { "contacts": [{ "name", "designation", "organization", "phone", "e
         }
         allContacts.push(contact)
       }
-      console.log(`[Scraper] Successfully extracted ${extracted.contacts?.length || 0} contacts from ${url}`);
+      console.log(`[Scraper] Extracted ${allContacts.length} valid contacts so far.`)
     } catch (err) {
-      console.error(`[Scraper] Contact extraction failed for ${url}:`, err)
+      console.error(`[Scraper] Extraction failed for ${url}:`, err)
     }
   }
 
+  // If scraping yielded nothing, synthesise via AI
   if (allContacts.length === 0) {
-    console.log(`[Scraper] No contacts found in snippets. Synthesizing fallback contacts for ${location.country}...`);
+    console.log(`[Scraper] No contacts from scraping. Synthesising AI fallback for ${location.country}...`)
     try {
       const synthesized = await gemmaGenerateJson<ExtractedContactsPayload>(
-        `Provide verified-style emergency disaster relief contacts for the given region.
-        Use real national emergency numbers where known (e.g. India 112, US 911).`,
+        `Provide verified emergency disaster relief contacts for the given region.
+        Use real national emergency numbers (India 112, 1070 for Tamil Nadu SDMA).`,
         `Country: ${location.country} (${location.countryCode}), Region: ${location.region}
-Return JSON with at least 4 contacts: police, fire, disaster management, and one NGO.`
+Return JSON with at least 4 contacts: police (100), fire (101), ambulance (102), disaster management (1070 for TN).`
       )
       for (const c of synthesized.contacts || []) {
         allContacts.push({
@@ -164,52 +275,71 @@ Return JSON with at least 4 contacts: police, fire, disaster management, and one
         })
       }
     } catch (err) {
-      console.error(`[Scraper] AI Synthesis failed:`, err);
+      console.error(`[Scraper] AI synthesis failed:`, err)
     }
   }
 
-  // Double check, if still zero (AI hit limit or failed), use static hardcoded fallback
+  // Final hardcoded fallback for Tamil Nadu / India
   if (allContacts.length === 0) {
-    console.log(`[Scraper] All AI methods failed. Using hardcoded static emergency numbers for ${location.countryCode}...`);
-    const staticContacts = [
-      { name: 'National Emergency Number', phone: '112', org: 'Gov' },
-      { name: 'Police', phone: '100', org: 'Official' },
-      { name: 'Fire Station', phone: '101', org: 'Official' },
-      { name: 'Ambulance', phone: '102', org: 'Medical' },
-      { name: 'Disaster Management Authority', phone: '108', org: 'Gov' },
-    ]
-    for (const sc of staticContacts) {
-      allContacts.push({
-        name: sc.name,
-        designation: 'Emergency Hotline',
-        roleOrOrganization: sc.org,
-        phone: sc.phone,
-        email: '',
-        category: 'Official Support',
-        sourceUrl: 'static-fallback',
-        regions: [location.region, location.country],
-        countryCode: location.countryCode,
-        scrapedAt: now,
-      })
-    }
+    console.log(`[Scraper] All methods failed. Using static emergency numbers.`)
+    const staticNow = new Date().toISOString()
+    const statics = isTamilNadu
+      ? TNSDMA_STATIC_CONTACTS.map((c) => ({ ...c, scrapedAt: staticNow }))
+      : [
+          { name: 'National Emergency', designation: 'Hotline', roleOrOrganization: 'Gov', phone: '112', email: '', category: 'Official Support', sourceUrl: 'static-fallback', regions: [location.region, location.country], countryCode: location.countryCode, scrapedAt: staticNow },
+          { name: 'Police', designation: 'Emergency', roleOrOrganization: 'Official', phone: '100', email: '', category: 'Official Support', sourceUrl: 'static-fallback', regions: [location.region, location.country], countryCode: location.countryCode, scrapedAt: staticNow },
+          { name: 'Fire Station', designation: 'Emergency', roleOrOrganization: 'Official', phone: '101', email: '', category: 'Fire', sourceUrl: 'static-fallback', regions: [location.region, location.country], countryCode: location.countryCode, scrapedAt: staticNow },
+          { name: 'Ambulance', designation: 'Emergency', roleOrOrganization: 'Medical', phone: '102', email: '', category: 'Medical', sourceUrl: 'static-fallback', regions: [location.region, location.country], countryCode: location.countryCode, scrapedAt: staticNow },
+        ]
+    allContacts.push(...statics)
   }
 
-  console.log(`[Scraper] Saving ${allContacts.length} contacts to database...`);
+  // Save to DB
+  console.log(`[Scraper] Saving ${allContacts.length} contacts to database...`)
   try {
     const col = await getCollection<ScrapedContact>('emergency_contacts')
     for (const contact of allContacts) {
       await col.updateOne(
-        { email: contact.email, phone: contact.phone, roleOrOrganization: contact.roleOrOrganization },
+        { phone: contact.phone, roleOrOrganization: contact.roleOrOrganization, countryCode: contact.countryCode },
         { $set: contact },
         { upsert: true }
       )
     }
-    console.log(`[Scraper] Successfully saved contacts to MongoDB.`);
+    console.log(`[Scraper] Saved successfully.`)
   } catch (err) {
-    console.error(`[Scraper] Database error while saving contacts:`, err);
+    console.error(`[Scraper] DB save error:`, err)
   }
 
   return allContacts
+}
+
+export async function seedDefaultContacts(): Promise<void> {
+  const col = await getCollection<ScrapedContact>('emergency_contacts')
+  const now = new Date().toISOString()
+  
+  const defaults: ScrapedContact[] = [
+    {
+      name: 'RP Official Contact',
+      designation: 'Local Authority',
+      roleOrOrganization: 'Madurai District Administration',
+      phone: '+919444000000', // standard format
+      email: 'rpofficialcontact@gmail.com',
+      category: 'Official Support',
+      sourceUrl: 'manual-seed',
+      regions: ['Madurai', 'Thirumangalam', 'Tamil Nadu'],
+      countryCode: 'IN',
+      scrapedAt: now,
+    },
+  ]
+
+  for (const c of defaults) {
+    await col.updateOne(
+      { email: c.email },
+      { $setOnInsert: c },
+      { upsert: true }
+    )
+  }
+  console.log('[Scraper] Default contacts seeded.')
 }
 
 export async function getContactsForLocation(

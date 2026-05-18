@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { X, Mic, Volume2, VolumeX, Terminal, ShieldAlert } from 'lucide-react';
-import { chatWithGemma } from '@/services/gemma/gemmaClient';
+import { chatWithGemma, extractSpeechOnly } from '@/services/gemma/gemmaClient';
 import { speakAsARIA, cancelAriaSpeech } from '@/services/tts/ariaVoiceService';
 import { useIncidentStore } from '@/store/incidentStore';
 import { t } from '@/utils/i18n';
@@ -49,8 +49,31 @@ export const AriaPanel: React.FC<AriaPanelProps> = ({ isOpen, onClose, onInciden
 
   const { userLocation, currentLanguage, setLanguage } = useIncidentStore();
 
+  /**
+   * Map current language name to BCP-47 language tag for Speech Recognition.
+   * For unknown/multilingual, we use 'mul' (Chrome supports it) or leave blank
+   * to let the browser use its default (usually works for accented English).
+   */
+  const getSpeechLang = () => {
+    const langMap: Record<string, string> = {
+      Tamil: 'ta-IN',
+      Hindi: 'hi-IN',
+      Telugu: 'te-IN',
+      Kannada: 'kn-IN',
+      Malayalam: 'ml-IN',
+      Bengali: 'bn-IN',
+      Marathi: 'mr-IN',
+      Gujarati: 'gu-IN',
+      Odia: 'or-IN',
+      Punjabi: 'pa-IN',
+      Urdu: 'ur-PK',
+      English: 'en-US',
+    }
+    return langMap[currentLanguage] || 'en-US'
+  }
+
   const performAriaSpeech = useCallback(
-    async (text: string) => {
+    async (text: string, lang?: string) => {
       if (isMuted) {
         setStatus('IDLE');
         return;
@@ -59,7 +82,8 @@ export const AriaPanel: React.FC<AriaPanelProps> = ({ isOpen, onClose, onInciden
       await speakAsARIA(
         text,
         () => setStatus('SPEAKING'),
-        () => setStatus('IDLE')
+        () => setStatus('IDLE'),
+        lang
       );
     },
     [isMuted]
@@ -123,7 +147,8 @@ export const AriaPanel: React.FC<AriaPanelProps> = ({ isOpen, onClose, onInciden
     const recognition = new SpeechRecognitionCtor();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = currentLanguage === 'Tamil' ? 'ta-IN' : 'en-US';
+    // Use detected/selected language; default to en-US which handles most accents well
+    recognition.lang = getSpeechLang();
 
     recognition.onresult = (event) => {
       let combined = '';
@@ -139,6 +164,11 @@ export const AriaPanel: React.FC<AriaPanelProps> = ({ isOpen, onClose, onInciden
         transcriptRef.current = trimmed;
         setTranscript(trimmed);
       }
+    };
+
+    recognition.onerror = () => {
+      // On error, try restarting with en-US as fallback
+      console.warn('[ARIA] Speech recognition error — retrying with en-US');
     };
 
     recognitionRef.current = recognition;
@@ -173,16 +203,7 @@ export const AriaPanel: React.FC<AriaPanelProps> = ({ isOpen, onClose, onInciden
       const reply = 'நிச்சயமாக. தயவுசெய்து பேரிடர் வகையும் பாதிக்கப்பட்டவர்களின் எண்ணிக்கையும் சொல்லுங்கள்.';
       setCurrentSpeech(reply);
       setChatHistory([...newHistory, { role: 'model', parts: [{ text: reply }] }]);
-      await performAriaSpeech(reply);
-      setStatus('IDLE');
-      return;
-    }
-    if (lowerMsg.includes('english')) {
-      setLanguage('English');
-      const reply = 'Understood. What type of disaster is it, and roughly how many people need help?';
-      setCurrentSpeech(reply);
-      setChatHistory([...newHistory, { role: 'model', parts: [{ text: reply }] }]);
-      await performAriaSpeech(reply);
+      await performAriaSpeech(reply, 'ta-IN');
       setStatus('IDLE');
       return;
     }
@@ -190,31 +211,33 @@ export const AriaPanel: React.FC<AriaPanelProps> = ({ isOpen, onClose, onInciden
     const res = await chatWithGemma(newHistory, userLocation);
 
     if (res.success) {
-      const text = res.text || '';
-      
-      // Parse Thinking vs Speaking
-      const thinkingMatch = text.match(/THINKING:\s*([\s\S]*?)(?=SPEAKING:|$)/i);
-      const speakingMatch = text.match(/SPEAKING:\s*([\s\S]*)/i);
-      
-      const thinking = thinkingMatch ? thinkingMatch[1].trim() : '';
-      const speaking = speakingMatch ? speakingMatch[1].trim() : (thinkingMatch ? '' : text);
-      
-      setThinkingDisplay(thinking);
+      const rawModelText = (res as any).rawModelText || ''
+
+      // Parse Thinking vs Speaking from the original model output — UI-only
+      const thinkingMatch = rawModelText.match(/THINKING:\s*([\s\S]*?)(?=SPEAKING:|$)/i)
+      const thinking = thinkingMatch ? thinkingMatch[1].trim() : ''
+      setThinkingDisplay(thinking)
+
+      // Use structured speechParts when provided to guarantee the 4-part sequence
+      const speechParts = (res as any).speechParts as { reassurance?: string; action?: string; advice?: string; instruction?: string } | undefined
+      const speechToSpeak = speechParts
+        ? `${speechParts.reassurance || ''} ${speechParts.action || ''} ${speechParts.advice || ''} ${speechParts.instruction || ''}`.trim()
+        : (res.text || '')
 
       if (res.extracted) {
-        const confirmMsg = speaking || 'I have logged your incident and notified emergency teams. Move to a safe place.';
-        setCurrentSpeech(confirmMsg);
-        setChatHistory([...newHistory, { role: 'model', parts: [{ text: text }] }]);
-        await performAriaSpeech(confirmMsg);
-        setHasExtracted(true);
-        onIncidentExtracted?.(res.extracted);
+        const confirmMsg = speechToSpeak || 'I have logged your incident and notified emergency teams. Move to a safe place.'
+        setCurrentSpeech(confirmMsg)
+        setChatHistory([...newHistory, { role: 'model', parts: [{ text: rawModelText || res.text || '' }] }])
+        await performAriaSpeech(confirmMsg, getSpeechLang())
+        setHasExtracted(true)
+        onIncidentExtracted?.(res.extracted)
         setTimeout(() => {
-          document.getElementById('assessed-cards')?.scrollIntoView({ behavior: 'smooth' });
-        }, 1000);
-      } else if (text) {
-        setCurrentSpeech(speaking || text);
-        setChatHistory([...newHistory, { role: 'model', parts: [{ text: text }] }]);
-        if (speaking) await performAriaSpeech(speaking);
+          document.getElementById('assessed-cards')?.scrollIntoView({ behavior: 'smooth' })
+        }, 1000)
+      } else if (speechToSpeak) {
+        setCurrentSpeech(speechToSpeak)
+        setChatHistory([...newHistory, { role: 'model', parts: [{ text: rawModelText || res.text || '' }] }])
+        await performAriaSpeech(speechToSpeak, getSpeechLang())
       }
     } else {
       const errorMsg = 'Connection issue. Please try again or use the report form below.';
